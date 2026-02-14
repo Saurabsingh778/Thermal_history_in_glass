@@ -418,9 +418,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📧 Contact
 
 For questions or collaboration:
-- **Email**: your.email@institution.edu
-- **Twitter**: @yourusername
-- **Lab Website**: https://your-lab-website.com
+- **Email**: saurabsingh778@gmail.com
 
 ---
 
