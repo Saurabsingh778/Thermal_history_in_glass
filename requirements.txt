@@ -1,0 +1,114 @@
+# Core Deep Learning Frameworks
+torch==2.0.1
+torchvision==0.15.2
+torchaudio==2.0.2
+
+# PyTorch Geometric (Graph Neural Networks)
+torch-geometric==2.3.1
+torch-scatter==2.1.1
+torch-sparse==0.6.17
+torch-cluster==1.6.1
+
+# JAX Ecosystem (Physics Simulation)
+jax==0.4.13
+jaxlib==0.4.13
+jax-md==0.2.8
+
+# Scientific Computing
+numpy==1.24.3
+scipy==1.10.1
+pandas==2.0.3
+
+# Machine Learning Utilities
+scikit-learn==1.3.0
+
+# Visualization
+matplotlib==3.7.2
+seaborn==0.12.2
+
+# Graph Analysis
+networkx==3.1
+
+# Data Handling
+pickle5==0.0.11  # For Python < 3.8 compatibility
+
+# Progress Bars & Utilities
+tqdm==4.66.1
+
+# GPU Acceleration (Optional but recommended)
+# Uncomment if using CUDA 11.8
+# --extra-index-url https://download.pytorch.org/whl/cu118
+
+# Development Tools (Optional)
+# jupyter==1.0.0
+# ipykernel==6.25.1
+# black==23.7.0
+# flake8==6.1.0
+
+# System Requirements:
+# - Python 3.8, 3.9, 3.10, or 3.11
+# - CUDA 11.8 or 12.1 (for GPU acceleration)
+# - 8+ GB RAM (16+ GB recommended)
+# - 5 GB disk space
+
+# Installation Instructions:
+# ========================
+# 
+# 1. Create virtual environment:
+#    python -m venv venv
+#    source venv/bin/activate  # On Windows: venv\Scripts\activate
+#
+# 2. Install PyTorch (visit https://pytorch.org for your specific system):
+#    
+#    # CPU-only (Linux/Mac):
+#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+#    
+#    # CUDA 11.8 (Linux/Windows):
+#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#    
+#    # CUDA 12.1 (Linux/Windows):
+#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#    
+#    # Mac (Apple Silicon):
+#    pip install torch torchvision torchaudio
+#
+# 3. Install PyTorch Geometric:
+#    
+#    # For CUDA 11.8:
+#    pip install torch-scatter torch-sparse torch-cluster torch-geometric \
+#        -f https://data.pyg.org/whl/torch-2.0.0+cu118.html
+#    
+#    # For CUDA 12.1:
+#    pip install torch-scatter torch-sparse torch-cluster torch-geometric \
+#        -f https://data.pyg.org/whl/torch-2.0.0+cu121.html
+#    
+#    # For CPU:
+#    pip install torch-scatter torch-sparse torch-cluster torch-geometric \
+#        -f https://data.pyg.org/whl/torch-2.0.0+cpu.html
+#
+# 4. Install JAX:
+#    
+#    # CPU-only:
+#    pip install jax jaxlib jax-md
+#    
+#    # GPU (CUDA 11.8):
+#    pip install jax[cuda11_pip] jaxlib jax-md -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+#    
+#    # GPU (CUDA 12.1):
+#    pip install jax[cuda12_pip] jaxlib jax-md -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+#
+# 5. Install remaining dependencies:
+#    pip install -r requirements.txt
+#
+# Verification:
+# =============
+# Run this to verify installation:
+#
+#   python -c "import torch; print('PyTorch:', torch.__version__, '| CUDA:', torch.cuda.is_available())"
+#   python -c "import jax; print('JAX:', jax.__version__, '| Devices:', jax.devices())"
+#   python -c "import torch_geometric; print('PyG:', torch_geometric.__version__)"
+#
+# Expected output:
+#   PyTorch: 2.0.1 | CUDA: True
+#   JAX: 0.4.13 | Devices: [cuda(id=0)]
+#   PyG: 2.3.1
