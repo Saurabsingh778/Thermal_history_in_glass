@@ -2,8 +2,14 @@
 GNN Training — KA4096 patches, RTX 4060 8GB
 =============================================
 THE PURE METRIC GEOMETRY TEST (5D Features)
-This version completely removes the Lennard-Jones Hessian to ensure 
-100% physical validity on the Kob-Andersen dataset.
+Completely removes the Lennard-Jones Hessian for 100% physical validity.
+
+DATA LEAKAGE FIX:
+  CV is now stratified at CONFIG level, not patch level.
+  All 3 patches from a single parent config are always
+  in the same fold — no overlap between train and test.
+
+Node features: 5D [mean_bond, std_bond, min_bond, max_bond, degree]
 """
 
 import os
@@ -25,42 +31,41 @@ from tqdm.auto import tqdm
 # CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 
-DATA_PATH    = 'glass_challenge_data_KA4096.pkl'
-# Changed cache name so it rebuilds the graphs correctly!
-GRAPH_CACHE  = 'graphs_KA512_5D_PURE_GEOMETRY.pt'          
+DATA_PATH    = '/kaggle/input/datasets/saurabingh/glass-challenge-data-ka4096/glass_challenge_data_KA4096.pkl'
+GRAPH_CACHE  = 'graphs_KA512_5D_FIXED.pt'
 BOX_SIZE     = (4096 / 1.2) ** (1/3)
 
 N_SUB        = 512
 N_PATCHES    = 3
-R_CUT_GRAPH  = 1.5    
-# THE FIX: Dropped to 5 features. Hessian is GONE.
+R_CUT_GRAPH  = 1.5
 NODE_DIM     = 5      # [mean_bond, std_bond, min_bond, max_bond, degree]
 
 BATCH_SIZE   = 4
-ACCUM_STEPS  = 4      
+ACCUM_STEPS  = 4      # effective batch = 16
 EPOCHS       = 30
 LR           = 1e-3
 N_FOLDS      = 5
 USE_AMP      = True
-RESULTS_FILE = "cv_results_KA512_5D_PURE_GEOMETRY.json"
+RESULTS_FILE = "cv_results_KA512_5D_FIXED.json"
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# GRAPH CONSTRUCTION  — rich node features from local geometry
+# GRAPH CONSTRUCTION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def build_patch(pos_np, hess_np, label, seed):
+def build_patch(pos_np, hess_np, label, seed, config_idx):
     """
-    pos_np  : (4096, 3) float32 particle positions
-    hess_np : IGNORED. We do not use the LJ Hessian for KA!
+    pos_np     : (4096, 3) float32 particle positions
+    hess_np    : IGNORED — pure metric geometry, no LJ Hessian
+    config_idx : int — parent configuration index, stored on graph for CV split
     """
     rng    = np.random.default_rng(seed)
     center = rng.integers(0, len(pos_np))
 
     tree    = cKDTree(pos_np, boxsize=[BOX_SIZE]*3)
     _, idxs = tree.query(pos_np[center], k=N_SUB)
-    sub_pos  = pos_np[idxs].astype(np.float32)
+    sub_pos = pos_np[idxs].astype(np.float32)
 
     sub_tree = cKDTree(sub_pos)
     pairs    = sub_tree.query_pairs(r=R_CUT_GRAPH, output_type='ndarray')
@@ -71,9 +76,9 @@ def build_patch(pos_np, hess_np, label, seed):
     dst = np.concatenate([pairs[:, 1], pairs[:, 0]])
 
     delta    = sub_pos[src] - sub_pos[dst]
-    bond_len = np.linalg.norm(delta, axis=1).astype(np.float32)   
+    bond_len = np.linalg.norm(delta, axis=1).astype(np.float32)
 
-    n  = N_SUB
+    n         = N_SUB
     bond_sum  = np.zeros(n, dtype=np.float32)
     bond_sum2 = np.zeros(n, dtype=np.float32)
     bond_min  = np.full(n, np.inf, dtype=np.float32)
@@ -91,12 +96,13 @@ def build_patch(pos_np, hess_np, label, seed):
     std_bond  = np.sqrt(np.maximum(bond_sum2 / safe_deg - mean_bond**2, 0.0))
     bond_min[bond_min == np.inf] = 0.0
 
-    # THE FIX: Stack -> (N_SUB, 5). Pure Metric Geometry.
+    # Pure metric geometry — no Hessian
     node_feats = np.stack(
         [mean_bond, std_bond, bond_min, bond_max, deg / deg.max()],
         axis=1
     ).astype(np.float32)
 
+    # Instance-normalize node features
     mu  = node_feats.mean(axis=0, keepdims=True)
     sig = node_feats.std(axis=0, keepdims=True) + 1e-6
     node_feats = (node_feats - mu) / sig
@@ -106,17 +112,26 @@ def build_patch(pos_np, hess_np, label, seed):
         edge_index = torch.tensor(np.stack([src, dst]), dtype=torch.long),
         edge_attr  = torch.from_numpy(bond_len.reshape(-1, 1)),
         y          = torch.tensor([label], dtype=torch.float),
+        config_idx = torch.tensor([config_idx], dtype=torch.long),  # ← LEAKAGE FIX
     )
+
 
 def load_or_build_graphs(raw_data, labels):
     if os.path.exists(GRAPH_CACHE):
         print(f"Loading cached graphs from {GRAPH_CACHE} …")
-        return torch.load(GRAPH_CACHE, weights_only=False)
+        graphs = torch.load(GRAPH_CACHE, weights_only=False)
+        # Verify cached graphs have config_idx (guard against loading old cache)
+        if not hasattr(graphs[0], 'config_idx'):
+            print("WARNING: Cached graphs missing config_idx — rebuilding!")
+            os.remove(GRAPH_CACHE)
+        else:
+            return graphs
 
     print(f"Building {N_PATCHES} patches × {len(raw_data)} samples …")
     t0   = time.time()
+    # config_idx (i) is now passed as the 5th argument
     args = [
-        (raw_data[i]['positions'], raw_data[i]['features'], labels[i], i * 1000 + p)
+        (raw_data[i]['positions'], raw_data[i]['features'], labels[i], i * 1000 + p, i)
         for i in range(len(raw_data))
         for p in range(N_PATCHES)
     ]
@@ -139,15 +154,15 @@ def load_or_build_graphs(raw_data, labels):
     return graphs
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MODEL  — 5D node features, same GATv2 architecture as paper
+# MODEL
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class GlassGAT(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = Linear(NODE_DIM, 64)
-        self.conv1   = GATv2Conv(64,  64, heads=4, edge_dim=1, concat=True)   
-        self.conv2   = GATv2Conv(256, 64, heads=4, edge_dim=1, concat=True)   
+        self.conv1   = GATv2Conv(64,  64, heads=4, edge_dim=1, concat=True)   # → 256
+        self.conv2   = GATv2Conv(256, 64, heads=4, edge_dim=1, concat=True)   # → 256
         self.classifier = Sequential(
             Linear(256, 128), LayerNorm(128), ReLU(), Dropout(0.2),
             Linear(128, 64),  ReLU(), Linear(64, 1)
@@ -209,36 +224,57 @@ def evaluate(model, loader):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
-    print(f"Device   : {DEVICE}")
-    print(f"Node features: {NODE_DIM}D  [mean_bond, std_bond, min_bond, max_bond, deg]")
+    print(f"Device        : {DEVICE}")
+    print(f"Node features : {NODE_DIM}D  [mean_bond, std_bond, min_bond, max_bond, deg]")
     print(f"N_SUB={N_SUB}  r_cut={R_CUT_GRAPH}  patches={N_PATCHES}")
     print(f"batch={BATCH_SIZE}  accum={ACCUM_STEPS}  eff={BATCH_SIZE*ACCUM_STEPS}  AMP={USE_AMP}")
+    print(f"CV strategy   : CONFIG-LEVEL stratification (leakage-free)")
 
-    scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
+    amp_scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
 
     with open(DATA_PATH, 'rb') as f:
         raw_data, labels = pickle.load(f)
-    print(f"Loaded {len(raw_data)} samples  Fast={labels.count(0)}  Slow={labels.count(1)}")
+    n_configs = len(raw_data)
+    print(f"Loaded {n_configs} configs  Fast={labels.count(0)}  Slow={labels.count(1)}")
 
-    dataset    = load_or_build_graphs(raw_data, labels)
-    labels_arr = [int(d.y.item()) for d in dataset]
+    dataset = load_or_build_graphs(raw_data, labels)
+
+    # ── CONFIG-LEVEL CV SPLIT ─────────────────────────────────────────────────
+    # Stratify on configs (length = n_configs), then map patches to folds
+    # by their stored config_idx. This guarantees zero config-level leakage.
+    config_label_arr = np.array(labels)                # (n_configs,)
+    config_indices   = np.arange(n_configs)
 
     skf          = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
     fold_results = []
     all_true, all_pred = [], []
 
-    print(f"\n{'='*55}")
-    print(f" STRATIFIED {N_FOLDS}-FOLD CV — KA512 patches (5D features)")
-    print(f"{'='*55}")
+    print(f"\n{'='*60}")
+    print(f" STRATIFIED {N_FOLDS}-FOLD CV — config-level split (5D features)")
+    print(f"{'='*60}")
     t_start = time.time()
 
-    for fold, (tr_idx, te_idx) in enumerate(skf.split(range(len(dataset)), labels_arr)):
-        print(f"\n─── FOLD {fold+1}/{N_FOLDS}  train={len(tr_idx)} test={len(te_idx)} ───")
+    for fold, (tr_cfg_idx, te_cfg_idx) in enumerate(
+            skf.split(config_indices, config_label_arr)):
 
-        tr_loader = DataLoader([dataset[i] for i in tr_idx],
-                               batch_size=BATCH_SIZE, shuffle=True,  num_workers=0)
-        te_loader = DataLoader([dataset[i] for i in te_idx],
-                               batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+        tr_cfg_set = set(tr_cfg_idx.tolist())
+        te_cfg_set = set(te_cfg_idx.tolist())
+
+        # Route every patch to the fold of its parent config
+        tr_graphs = [g for g in dataset if g.config_idx.item() in tr_cfg_set]
+        te_graphs  = [g for g in dataset if g.config_idx.item() in te_cfg_set]
+
+        # Sanity check: no config appears in both sets
+        tr_cids = {g.config_idx.item() for g in tr_graphs}
+        te_cids = {g.config_idx.item() for g in te_graphs}
+        assert tr_cids.isdisjoint(te_cids), "BUG: config overlap between train and test!"
+
+        print(f"\n─── FOLD {fold+1}/{N_FOLDS} ───")
+        print(f"    configs  : train={len(tr_cfg_idx)}  test={len(te_cfg_idx)}")
+        print(f"    patches  : train={len(tr_graphs)}   test={len(te_graphs)}")
+
+        tr_loader = DataLoader(tr_graphs, batch_size=BATCH_SIZE, shuffle=True,  num_workers=0)
+        te_loader = DataLoader(te_graphs, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
         model     = GlassGAT().to(DEVICE)
         optimizer = torch.optim.Adam(model.parameters(), lr=LR)
@@ -250,7 +286,7 @@ if __name__ == '__main__':
         EARLY_STOP = 20
 
         for epoch in range(1, EPOCHS + 1):
-            tr_loss = train_epoch(model, tr_loader, optimizer, criterion, scaler)
+            tr_loss = train_epoch(model, tr_loader, optimizer, criterion, amp_scaler)
             val_loss, val_acc, val_auc, val_f1, _, _ = evaluate(model, te_loader)
             scheduler.step(val_loss)
 
@@ -272,8 +308,9 @@ if __name__ == '__main__':
 
         model.load_state_dict(best_state)
         _, acc, auc, f1, ft, fp = evaluate(model, te_loader)
-        all_true.extend(ft); all_pred.extend(fp)
-        fold_results.append({"fold": fold+1, "acc": acc, "auc": auc, "f1": f1})
+        all_true.extend(ft)
+        all_pred.extend(fp)
+        fold_results.append({"fold": fold+1, "acc": float(acc), "auc": float(auc), "f1": float(f1)})
         print(f"  ✓ Fold {fold+1}  Acc={acc*100:.2f}%  AUC={auc:.4f}  F1={f1:.4f}")
 
     elapsed = time.time() - t_start
@@ -281,12 +318,12 @@ if __name__ == '__main__':
     aucs = [r["auc"] for r in fold_results]
     f1s  = [r["f1"]  for r in fold_results]
 
-    print(f"\n{'='*55}")
-    print(f" FINAL RESULTS  ({elapsed/60:.1f} min)")
-    print(f"{'='*55}")
+    print(f"\n{'='*60}")
+    print(f" FINAL RESULTS — 5D features, config-level CV  ({elapsed/60:.1f} min)")
+    print(f"{'='*60}")
     for r in fold_results:
         print(f"  Fold {r['fold']}: Acc={r['acc']*100:.2f}%  AUC={r['auc']:.4f}  F1={r['f1']:.4f}")
-    print(f"{'─'*55}")
+    print(f"{'─'*60}")
     print(f"  Mean Acc : {np.mean(accs)*100:.2f}% ± {np.std(accs)*100:.2f}%")
     print(f"  Mean AUC : {np.mean(aucs):.4f} ± {np.std(aucs):.4f}")
     print(f"  Mean F1  : {np.mean(f1s):.4f} ± {np.std(f1s):.4f}")
@@ -297,13 +334,14 @@ if __name__ == '__main__':
                                 target_names=["Fast T=0.64", "Slow T=0.44"]))
 
     summary = {
-        "dataset"    : f"KA4096 patches N={N_SUB} r_cut={R_CUT_GRAPH}",
-        "node_features": "mean_bond std_bond min_bond max_bond deg (instance-normed)",
-        "n_patches"  : N_PATCHES, "n_sub": N_SUB, "n_folds": N_FOLDS,
-        "fold_results": fold_results,
-        "mean_acc"   : float(np.mean(accs)), "std_acc": float(np.std(accs)),
-        "mean_auc"   : float(np.mean(aucs)), "std_auc": float(np.std(aucs)),
-        "mean_f1"    : float(np.mean(f1s)),  "std_f1" : float(np.std(f1s)),
+        "dataset"       : f"KA4096 patches N={N_SUB} r_cut={R_CUT_GRAPH}",
+        "node_features" : "mean_bond std_bond min_bond max_bond deg (instance-normed)",
+        "cv_strategy"   : "config-level stratification — NO DATA LEAKAGE",
+        "n_patches"     : N_PATCHES, "n_sub": N_SUB, "n_folds": N_FOLDS,
+        "fold_results"  : fold_results,
+        "mean_acc"      : float(np.mean(accs)), "std_acc": float(np.std(accs)),
+        "mean_auc"      : float(np.mean(aucs)), "std_auc": float(np.std(aucs)),
+        "mean_f1"       : float(np.mean(f1s)),  "std_f1" : float(np.std(f1s)),
         "confusion_matrix": cm.tolist(),
     }
     with open(RESULTS_FILE, "w") as f:
